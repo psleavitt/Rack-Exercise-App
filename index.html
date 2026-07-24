@@ -366,6 +366,7 @@
   }
   function saveState(){
     state.updatedAt = Date.now();
+    _sessionsCache = null;
     try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }
     catch(e){ console.warn("Could not save data", e); }
     schedulePush();
@@ -441,6 +442,7 @@
           if(!remote.routines) remote.routines = [];
           if(!remote.bodyWeights) remote.bodyWeights = [];
           state = remote;
+          _sessionsCache = null;
           try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){}
           renderApp();
           if(showToastOnUpdate) showToast("Synced from cloud");
@@ -580,39 +582,170 @@
     }, 0);
   }
   function isoFromDate(d){ return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate()); }
-  function startOfWeekISO(){
+  function startOfWeekISO(offsetWeeks){
+    offsetWeeks = offsetWeeks || 0;
     var d = new Date();
     var day = d.getDay();
     var diff = (day===0 ? -6 : 1-day);
-    d.setDate(d.getDate()+diff);
+    d.setDate(d.getDate()+diff+offsetWeeks*7);
     return isoFromDate(d);
   }
-  function startOfMonthISO(){
+  function startOfMonthISO(offsetMonths){
+    offsetMonths = offsetMonths || 0;
     var d = new Date();
     d.setDate(1);
+    d.setMonth(d.getMonth()+offsetMonths);
     return isoFromDate(d);
   }
-  function summaryFor(startISO){
-    var entries = state.entries.filter(function(e){ return e.date>=startISO; });
-    var days = {};
+
+  var SESSION_GAP_MS = 2*60*60*1000; // 2 hours
+  var _sessionsCache = null;
+  function allSessions(){
+    if(_sessionsCache) return _sessionsCache;
+    var sorted = state.entries.slice().sort(function(a,b){ return a.createdAt-b.createdAt; });
+    var sessions = [];
+    var current = null;
+    sorted.forEach(function(e){
+      if(!current || e.createdAt - current.lastAt > SESSION_GAP_MS){
+        current = { startAt: e.createdAt, lastAt: e.createdAt, entries: [e] };
+        sessions.push(current);
+      } else {
+        current.lastAt = e.createdAt;
+        current.entries.push(e);
+      }
+    });
+    _sessionsCache = sessions;
+    return sessions;
+  }
+  function sessionsInRange(startISO, endISO){
+    return allSessions().filter(function(s){
+      var d = isoFromDate(new Date(s.startAt));
+      return d>=startISO && (!endISO || d<endISO);
+    });
+  }
+
+  function summaryForRange(startISO, endISO){
+    var entries = state.entries.filter(function(e){ return e.date>=startISO && (!endISO || e.date<endISO); });
     var volume = 0, distMi = 0, distKm = 0;
     entries.forEach(function(e){
-      days[e.date] = true;
       var ex = getExercise(e.exerciseId);
       if(!ex) return;
       if(ex.type==="strength") volume += entryVolume(e);
-      else {
+      else if(ex.type==="cardio"){
         var u = ex.distanceUnit||"mi";
         if(u==="km") distKm += (e.distance||0); else distMi += (e.distance||0);
       }
     });
-    return { sessions: Object.keys(days).length, volume: volume, distMi: distMi, distKm: distKm };
+    return { sessions: sessionsInRange(startISO, endISO).length, volume: volume, distMi: distMi, distKm: distKm };
   }
   function formatDistanceSummary(s){
     var parts = [];
     if(s.distMi>0) parts.push((Math.round(s.distMi*10)/10)+" mi");
     if(s.distKm>0) parts.push((Math.round(s.distKm*10)/10)+" km");
     return parts.length ? parts.join(" + ") : "—";
+  }
+  function deltaTag(curr, prev){
+    if(prev<=0) return curr>0 ? '<span style="color:#2A7A3B;">new</span>' : '';
+    var pct = Math.round(((curr-prev)/prev)*100);
+    if(pct===0) return '<span style="color:var(--ink-faint);">flat</span>';
+    var color = pct>0 ? "#2A7A3B" : "var(--red-deep)";
+    return '<span style="color:'+color+';">'+(pct>0?"+":"")+pct+'%</span>';
+  }
+  function deltaDistanceTag(currMi, prevMi, currKm, prevKm){
+    var bits = [];
+    if(currMi>0 || prevMi>0) bits.push(deltaTag(currMi, prevMi));
+    if(currKm>0 || prevKm>0) bits.push(deltaTag(currKm, prevKm));
+    return bits.filter(Boolean).join(" / ");
+  }
+
+  function epley1RM(weight, reps){ return weight * (1 + reps/30); }
+  function bestEstimated1RM(exId){
+    var list = exerciseEntries(exId);
+    if(!list.length) return null;
+    var best = null, bestVal = -Infinity;
+    list.forEach(function(e){
+      var val = epley1RM(e.weight, e.reps);
+      if(val>bestVal){ bestVal = val; best = e; }
+    });
+    return best ? { value: bestVal, entry: best } : null;
+  }
+
+  function lifetimeStats(){
+    var totalSets = state.entries.length;
+    var volume = 0, distMi = 0, distKm = 0;
+    state.entries.forEach(function(e){
+      var ex = getExercise(e.exerciseId);
+      if(!ex) return;
+      if(ex.type==="strength") volume += entryVolume(e);
+      else if(ex.type==="cardio"){
+        var u = ex.distanceUnit||"mi";
+        if(u==="km") distKm += (e.distance||0); else distMi += (e.distance||0);
+      }
+    });
+    var sessions = allSessions();
+    var multiSessions = sessions.filter(function(s){ return s.entries.length>1; });
+    var avgLenMs = multiSessions.length
+      ? multiSessions.reduce(function(sum,s){ return sum+(s.lastAt-s.startAt); },0) / multiSessions.length
+      : 0;
+    var longestMs = sessions.reduce(function(max,s){ return Math.max(max, s.lastAt-s.startAt); }, 0);
+    var avgSets = sessions.length ? totalSets/sessions.length : 0;
+    return {
+      totalSets: totalSets, volume: volume, distMi: distMi, distKm: distKm,
+      totalSessions: sessions.length, avgLenMs: avgLenMs, longestMs: longestMs, avgSets: avgSets
+    };
+  }
+  function formatMinutes(ms){
+    var mins = Math.round(ms/60000);
+    return mins>0 ? mins+" min" : "—";
+  }
+
+  function buildPRTimeline(){
+    var events = [];
+    state.exercises.forEach(function(ex){
+      var list = exerciseEntries(ex.id);
+      if(ex.type==="strength"){
+        var best = null;
+        list.forEach(function(e){
+          var isNew = best && (e.weight>best.weight || (e.weight===best.weight && e.reps>best.reps));
+          if(best && isNew){
+            events.push({ createdAt:e.createdAt, date:e.date, exName:ex.name, type:"strength",
+              text: e.weight+" lb \u00d7 "+e.reps });
+          }
+          if(!best || isNew) best = e;
+        });
+      } else if(ex.type==="bodyweight"){
+        var bestR = null;
+        list.forEach(function(e){
+          var isNew = bestR && e.reps>bestR.reps;
+          if(bestR && isNew){
+            events.push({ createdAt:e.createdAt, date:e.date, exName:ex.name, type:"bodyweight",
+              text: e.reps+" reps" });
+          }
+          if(!bestR || isNew) bestR = e;
+        });
+      } else if(ex.type==="cardio"){
+        var unit = ex.distanceUnit||"mi";
+        var bestPace = null, bestPaceVal = Infinity, bestDist = null, bestDistVal = -Infinity;
+        list.forEach(function(e){
+          var totalSec = (e.minutes||0)*60+(e.seconds||0);
+          if(totalSec>0){
+            var pace = totalSec/(e.distance||0.0001);
+            if(bestPace && pace<bestPaceVal){
+              events.push({ createdAt:e.createdAt, date:e.date, exName:ex.name, type:"cardio",
+                text: "Pace: "+formatPace(pace,unit)+" ("+e.distance+" "+unit+")" });
+            }
+            if(!bestPace || pace<bestPaceVal){ bestPaceVal = pace; bestPace = e; }
+          }
+          if(bestDist && e.distance>bestDistVal){
+            events.push({ createdAt:e.createdAt, date:e.date, exName:ex.name, type:"cardio",
+              text: "Distance: "+e.distance+" "+unit+" (longest)" });
+          }
+          if(!bestDist || e.distance>bestDistVal){ bestDistVal = e.distance; bestDist = e; }
+        });
+      }
+    });
+    events.sort(function(a,b){ return b.createdAt-a.createdAt; });
+    return events;
   }
 
   function bodyWeightSorted(){
@@ -925,21 +1058,53 @@
   /* ---------- PROGRESS TAB ---------- */
   function renderProgressTab(){
     var html = "";
-    var wk = summaryFor(startOfWeekISO());
-    var mo = summaryFor(startOfMonthISO());
+    var wk = summaryForRange(startOfWeekISO(0), null);
+    var wkPrev = summaryForRange(startOfWeekISO(-1), startOfWeekISO(0));
+    var mo = summaryForRange(startOfMonthISO(0), null);
+    var moPrev = summaryForRange(startOfMonthISO(-1), startOfMonthISO(0));
+
     html += '<div class="section-title" style="margin-top:4px;">This week &amp; month</div>';
     html += '<div class="summary-grid">' +
       '<div class="summary-col"><div class="summary-period">This week</div>' +
-        '<div class="summary-stat"><span class="k">Sessions</span><span class="v">'+wk.sessions+'</span></div>' +
-        '<div class="summary-stat"><span class="k">Volume</span><span class="v">'+Math.round(wk.volume).toLocaleString()+' lb</span></div>' +
-        '<div class="summary-stat"><span class="k">Cardio</span><span class="v">'+formatDistanceSummary(wk)+'</span></div>' +
+        '<div class="summary-stat"><span class="k">Sessions</span><span class="v">'+wk.sessions+' '+deltaTag(wk.sessions,wkPrev.sessions)+'</span></div>' +
+        '<div class="summary-stat"><span class="k">Volume</span><span class="v">'+Math.round(wk.volume).toLocaleString()+' lb '+deltaTag(wk.volume,wkPrev.volume)+'</span></div>' +
+        '<div class="summary-stat"><span class="k">Cardio</span><span class="v">'+formatDistanceSummary(wk)+' '+deltaDistanceTag(wk.distMi,wkPrev.distMi,wk.distKm,wkPrev.distKm)+'</span></div>' +
       '</div>' +
       '<div class="summary-col"><div class="summary-period">This month</div>' +
-        '<div class="summary-stat"><span class="k">Sessions</span><span class="v">'+mo.sessions+'</span></div>' +
-        '<div class="summary-stat"><span class="k">Volume</span><span class="v">'+Math.round(mo.volume).toLocaleString()+' lb</span></div>' +
-        '<div class="summary-stat"><span class="k">Cardio</span><span class="v">'+formatDistanceSummary(mo)+'</span></div>' +
+        '<div class="summary-stat"><span class="k">Sessions</span><span class="v">'+mo.sessions+' '+deltaTag(mo.sessions,moPrev.sessions)+'</span></div>' +
+        '<div class="summary-stat"><span class="k">Volume</span><span class="v">'+Math.round(mo.volume).toLocaleString()+' lb '+deltaTag(mo.volume,moPrev.volume)+'</span></div>' +
+        '<div class="summary-stat"><span class="k">Cardio</span><span class="v">'+formatDistanceSummary(mo)+' '+deltaDistanceTag(mo.distMi,moPrev.distMi,mo.distKm,moPrev.distKm)+'</span></div>' +
       '</div>' +
     '</div>';
+    html += '<div class="chart-note" style="margin:-4px 0 4px;">vs. previous week / month</div>';
+
+    if(state.entries.length){
+      var life = lifetimeStats();
+      html += '<div class="section-title">Lifetime &amp; session stats</div>';
+      html += '<div class="card" style="padding:4px 16px;">' +
+        statRow("Total sessions", life.totalSessions) +
+        statRow("Avg session length", formatMinutes(life.avgLenMs)) +
+        statRow("Avg sets / session", life.avgSets.toFixed(1)) +
+        statRow("Longest session", formatMinutes(life.longestMs)) +
+        statRow("Total sets logged", life.totalSets) +
+        statRow("Total volume lifted", Math.round(life.volume).toLocaleString()+" lb") +
+        statRow("Total cardio distance", formatDistanceSummary(life)) +
+      '</div>';
+
+      var events = buildPRTimeline();
+      html += '<div class="section-title">Recent PRs</div>';
+      if(!events.length){
+        html += '<div class="empty" style="padding:20px 16px;">Beat one of your existing bests and it\'ll show up here.</div>';
+      } else {
+        html += '<div class="card" style="padding:4px 16px;max-height:280px;overflow-y:auto;">';
+        events.slice(0,30).forEach(function(ev){
+          html += '<div class="session-row"><div class="session-left"><span class="typetag '+ev.type+'">'+typeLabel(ev.type)+'</span>' +
+            '<div><div class="session-name">'+escapeHtml(ev.exName)+'</div>' +
+            '<div class="session-meta">'+ev.text+' <span class="session-time">&middot; '+dateLabel(ev.date)+'</span></div></div></div></div>';
+        });
+        html += '</div>';
+      }
+    }
 
     if(!state.exercises.length){
       html += '<div class="section-title">Your exercises</div>';
@@ -957,6 +1122,10 @@
         '<span class="chev">&rsaquo;</span></div></div>';
     });
     return html;
+  }
+  function statRow(label, value){
+    return '<div class="routine-mgmt-row"><span style="color:var(--ink-soft);font-size:13px;">'+label+'</span>' +
+      '<span style="font-family:\'JetBrains Mono\';font-weight:700;font-size:14px;">'+value+'</span></div>';
   }
 
   function wireProgressTab(){
@@ -988,8 +1157,10 @@
         '<div class="pr-badge" style="border-color:var(--gold);"><span class="val">'+(pr?pr.weight:"—")+'</span><span class="lbl">lb PR</span></div>' +
         '<div class="pr-text">' + (pr ? '<div class="val">'+pr.weight+' lb &times; '+pr.reps+'</div><div class="lbl">'+dateLabel(pr.date)+'</div>' : '<div class="lbl">No PR yet</div>') + '</div>' +
       '</div>';
+      var e1rm = bestEstimated1RM(exId);
+      if(e1rm) html += '<div style="font-size:12px;color:var(--ink-soft);margin:-10px 0 6px;">Est. 1-rep max: <b style="color:var(--ink);">'+Math.round(e1rm.value)+' lb</b> <span style="color:var(--ink-faint);">(from '+e1rm.entry.weight+' lb &times; '+e1rm.entry.reps+')</span></div>';
       var lifeVol = exerciseLifetimeVolume(exId);
-      if(lifeVol>0) html += '<div style="font-size:12px;color:var(--ink-soft);margin:-10px 0 16px;">Lifetime volume: '+Math.round(lifeVol).toLocaleString()+' lb</div>';
+      if(lifeVol>0) html += '<div style="font-size:12px;color:var(--ink-soft);margin:0 0 16px;">Lifetime volume: '+Math.round(lifeVol).toLocaleString()+' lb</div>';
     } else if(ex.type==="bodyweight"){
       var bpr = bodyweightPR(exId);
       html += '<div class="pr-row">' +
@@ -1446,7 +1617,7 @@
       '<div class="settings-note"><strong style="color:var(--ink);">Favorites.</strong> Tap the star ☆ on any exercise chip or in the Progress list to pin it to the top of your exercise row.</div>' +
       '<div class="settings-note"><strong style="color:var(--ink);">Routines.</strong> Tap "Manage" next to Routines on the Log tab to group exercises (like "Push day" or "Leg day"). Select a routine chip to filter the exercise row to just those movements.</div>' +
       '<div class="settings-note"><strong style="color:var(--ink);">Log a set.</strong> Tap an exercise chip to open its logger. For strength, tap the plate buttons to stack weight, set your reps, and tap "Log set." For cardio, enter distance and time — pace calculates live. Today\'s total volume appears below the feed.</div>' +
-      '<div class="settings-note"><strong style="color:var(--ink);">Progress.</strong> The Progress tab shows a weekly and monthly summary (sessions, volume, cardio distance) plus every exercise with its PR. Tap an exercise for its trend chart and full history.</div>' +
+      '<div class="settings-note"><strong style="color:var(--ink);">Progress.</strong> The Progress tab shows weekly/monthly summaries with trend arrows vs. the prior period, lifetime totals and session stats, a feed of your recent PRs across every exercise, and each exercise with its current PR. Strength exercises also show an estimated 1-rep max. Tap an exercise for its trend chart and full history.</div>' +
       '<div class="settings-note"><strong style="color:var(--ink);">Body weight.</strong> The Body tab lets you log daily weigh-ins, see 30- and 90-day change, and tracks a trend chart over time.</div>' +
       '<div class="settings-note"><strong style="color:var(--ink);">Back up your data.</strong> Everything is stored only in this browser. Use the gear ⚙️ to download a backup or restore one on a new device.</div>' +
       '<div class="modal-actions" style="margin-top:14px;"><button class="btn btn-primary" id="closeHelp" style="flex:1;">Got it</button></div>';
