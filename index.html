@@ -612,6 +612,14 @@
   var SESSION_GAP_MS = 2*60*60*1000; // 2 hours
   var MIN_SESSION_MS = 5*60*1000; // ignore quick one-off logs under 5 min (e.g. a few sets at home)
   var _sessionsCache = null;
+  function effectiveStart(e, ex){
+    // cardio is logged after finishing, so the real start was earlier by its duration
+    if(ex && ex.type==="cardio"){
+      var durSec = (e.minutes||0)*60 + (e.seconds||0);
+      return e.createdAt - durSec*1000;
+    }
+    return e.createdAt;
+  }
   function allSessions(){
     if(_sessionsCache) return _sessionsCache;
     var sorted = state.entries.slice().sort(function(a,b){ return a.createdAt-b.createdAt; });
@@ -626,13 +634,21 @@
         current.entries.push(e);
       }
     });
-    sessions = sessions.filter(function(s){ return (s.lastAt - s.startAt) >= MIN_SESSION_MS; });
+    sessions.forEach(function(s){
+      var minStart = s.startAt;
+      s.entries.forEach(function(e){
+        var es = effectiveStart(e, getExercise(e.exerciseId));
+        if(es < minStart) minStart = es;
+      });
+      s.effectiveStartAt = minStart;
+    });
+    sessions = sessions.filter(function(s){ return (s.lastAt - s.effectiveStartAt) >= MIN_SESSION_MS; });
     _sessionsCache = sessions;
     return sessions;
   }
   function sessionsInRange(startISO, endISO){
     return allSessions().filter(function(s){
-      var d = isoFromDate(new Date(s.startAt));
+      var d = isoFromDate(new Date(s.effectiveStartAt));
       return d>=startISO && (!endISO || d<endISO);
     });
   }
@@ -697,9 +713,9 @@
     });
     var sessions = allSessions();
     var avgLenMs = sessions.length
-      ? sessions.reduce(function(sum,s){ return sum+(s.lastAt-s.startAt); },0) / sessions.length
+      ? sessions.reduce(function(sum,s){ return sum+(s.lastAt-s.effectiveStartAt); },0) / sessions.length
       : 0;
-    var longestMs = sessions.reduce(function(max,s){ return Math.max(max, s.lastAt-s.startAt); }, 0);
+    var longestMs = sessions.reduce(function(max,s){ return Math.max(max, s.lastAt-s.effectiveStartAt); }, 0);
     var totalQualifyingSets = sessions.reduce(function(sum,s){ return sum+s.entries.length; }, 0);
     var avgSets = sessions.length ? totalQualifyingSets/sessions.length : 0;
     return {
