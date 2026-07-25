@@ -610,6 +610,7 @@
   }
 
   var SESSION_GAP_MS = 2*60*60*1000; // 2 hours
+  var MIN_SESSION_MS = 5*60*1000; // ignore quick one-off logs under 5 min (e.g. a few sets at home)
   var _sessionsCache = null;
   function allSessions(){
     if(_sessionsCache) return _sessionsCache;
@@ -625,6 +626,7 @@
         current.entries.push(e);
       }
     });
+    sessions = sessions.filter(function(s){ return (s.lastAt - s.startAt) >= MIN_SESSION_MS; });
     _sessionsCache = sessions;
     return sessions;
   }
@@ -694,12 +696,12 @@
       }
     });
     var sessions = allSessions();
-    var multiSessions = sessions.filter(function(s){ return s.entries.length>1; });
-    var avgLenMs = multiSessions.length
-      ? multiSessions.reduce(function(sum,s){ return sum+(s.lastAt-s.startAt); },0) / multiSessions.length
+    var avgLenMs = sessions.length
+      ? sessions.reduce(function(sum,s){ return sum+(s.lastAt-s.startAt); },0) / sessions.length
       : 0;
     var longestMs = sessions.reduce(function(max,s){ return Math.max(max, s.lastAt-s.startAt); }, 0);
-    var avgSets = sessions.length ? totalSets/sessions.length : 0;
+    var totalQualifyingSets = sessions.reduce(function(sum,s){ return sum+s.entries.length; }, 0);
+    var avgSets = sessions.length ? totalQualifyingSets/sessions.length : 0;
     return {
       totalSets: totalSets, volume: volume, distMi: distMi, distKm: distKm,
       totalSessions: sessions.length, avgLenMs: avgLenMs, longestMs: longestMs, avgSets: avgSets
@@ -708,55 +710,6 @@
   function formatMinutes(ms){
     var mins = Math.round(ms/60000);
     return mins>0 ? mins+" min" : "—";
-  }
-
-  function buildPRTimeline(){
-    var events = [];
-    state.exercises.forEach(function(ex){
-      var list = exerciseEntries(ex.id);
-      if(ex.type==="strength"){
-        var best = null;
-        list.forEach(function(e){
-          var isNew = best && (e.weight>best.weight || (e.weight===best.weight && e.reps>best.reps));
-          if(best && isNew){
-            events.push({ createdAt:e.createdAt, date:e.date, exName:ex.name, type:"strength",
-              text: e.weight+" lb \u00d7 "+e.reps });
-          }
-          if(!best || isNew) best = e;
-        });
-      } else if(ex.type==="bodyweight"){
-        var bestR = null;
-        list.forEach(function(e){
-          var isNew = bestR && e.reps>bestR.reps;
-          if(bestR && isNew){
-            events.push({ createdAt:e.createdAt, date:e.date, exName:ex.name, type:"bodyweight",
-              text: e.reps+" reps" });
-          }
-          if(!bestR || isNew) bestR = e;
-        });
-      } else if(ex.type==="cardio"){
-        var unit = ex.distanceUnit||"mi";
-        var bestPace = null, bestPaceVal = Infinity, bestDist = null, bestDistVal = -Infinity;
-        list.forEach(function(e){
-          var totalSec = (e.minutes||0)*60+(e.seconds||0);
-          if(totalSec>0){
-            var pace = totalSec/(e.distance||0.0001);
-            if(bestPace && pace<bestPaceVal){
-              events.push({ createdAt:e.createdAt, date:e.date, exName:ex.name, type:"cardio",
-                text: "Pace: "+formatPace(pace,unit)+" ("+e.distance+" "+unit+")" });
-            }
-            if(!bestPace || pace<bestPaceVal){ bestPaceVal = pace; bestPace = e; }
-          }
-          if(bestDist && e.distance>bestDistVal){
-            events.push({ createdAt:e.createdAt, date:e.date, exName:ex.name, type:"cardio",
-              text: "Distance: "+e.distance+" "+unit+" (longest)" });
-          }
-          if(!bestDist || e.distance>bestDistVal){ bestDistVal = e.distance; bestDist = e; }
-        });
-      }
-    });
-    events.sort(function(a,b){ return b.createdAt-a.createdAt; });
-    return events;
   }
 
   function bodyWeightSorted(){
@@ -1139,20 +1092,6 @@
         statRow("Total volume lifted", Math.round(life.volume).toLocaleString()+" lb") +
         statRow("Total cardio distance", formatDistanceSummary(life)) +
       '</div>';
-
-      var events = buildPRTimeline();
-      html += '<div class="section-title">Recent PRs</div>';
-      if(!events.length){
-        html += '<div class="empty" style="padding:20px 16px;">Beat one of your existing bests and it\'ll show up here.</div>';
-      } else {
-        html += '<div class="card" style="padding:4px 16px;max-height:280px;overflow-y:auto;">';
-        events.slice(0,30).forEach(function(ev){
-          html += '<div class="session-row"><div class="session-left"><span class="typetag '+ev.type+'">'+typeLabel(ev.type)+'</span>' +
-            '<div><div class="session-name">'+escapeHtml(ev.exName)+'</div>' +
-            '<div class="session-meta">'+ev.text+' <span class="session-time">&middot; '+dateLabel(ev.date)+'</span></div></div></div></div>';
-        });
-        html += '</div>';
-      }
     }
 
     if(!state.exercises.length){
