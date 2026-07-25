@@ -1056,8 +1056,50 @@
   }
 
   /* ---------- PROGRESS TAB ---------- */
+  function currentPRText(ex){
+    if(ex.type==="strength"){
+      var pr = strengthPR(ex.id);
+      if(!pr) return null;
+      return { value: pr.weight+" lb", sub: "\u00d7 "+pr.reps+" \u00b7 "+dateLabel(pr.date) };
+    }
+    if(ex.type==="bodyweight"){
+      var bpr = bodyweightPR(ex.id);
+      if(!bpr) return null;
+      return { value: bpr.reps+" reps", sub: dateLabel(bpr.date) };
+    }
+    if(ex.type==="cardio"){
+      var cpr = cardioPR(ex.id);
+      if(!cpr || (!cpr.pace && !cpr.distance)) return null;
+      var unit = ex.distanceUnit||"mi";
+      if(cpr.pace){
+        var sub = cpr.distance ? "Longest: "+cpr.distance.distance+" "+unit : dateLabel(cpr.pace.date);
+        return { value: formatPace(cpr.paceVal, unit)+" pace", sub: sub };
+      }
+      return { value: cpr.distance.distance+" "+unit, sub: "Longest \u00b7 "+dateLabel(cpr.distance.date) };
+    }
+    return null;
+  }
+
   function renderProgressTab(){
     var html = "";
+
+    var prRows = sortedExercises().map(function(ex){
+      var pr = currentPRText(ex);
+      return pr ? { ex: ex, pr: pr } : null;
+    }).filter(Boolean);
+    if(prRows.length){
+      html += '<div class="section-title" style="margin-top:4px;">Current PRs</div>';
+      html += '<div class="card" style="padding:4px 16px;">';
+      prRows.forEach(function(row){
+        html += '<div class="session-row" data-ex="'+row.ex.id+'" style="cursor:pointer;">' +
+          '<div class="session-left"><span class="typetag '+row.ex.type+'">'+typeLabel(row.ex.type)+'</span>' +
+          '<div><div class="session-name">'+escapeHtml(row.ex.name)+'</div>' +
+          '<div class="session-meta">'+row.pr.sub+'</div></div></div>' +
+          '<div style="font-family:\'JetBrains Mono\';font-weight:700;font-size:15px;">'+row.pr.value+'</div></div>';
+      });
+      html += '</div>';
+    }
+
     var wk = summaryForRange(startOfWeekISO(0), null);
     var wkPrev = summaryForRange(startOfWeekISO(-1), startOfWeekISO(0));
     var mo = summaryForRange(startOfMonthISO(0), null);
