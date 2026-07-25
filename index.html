@@ -320,6 +320,17 @@
   .sync-dot.ok{ background:#2A7A3B; }
   .sync-dot.syncing{ background:var(--gold); }
   .sync-dot.error{ background:var(--red); }
+  .pr-compact-row{
+    display:flex; align-items:baseline; justify-content:space-between;
+    gap:10px; padding:7px 0; border-bottom:1px solid var(--line);
+  }
+  .pr-compact-row:last-child{ border-bottom:none; }
+  .pr-compact-name{
+    flex:1; font-weight:600; font-size:13px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .pr-compact-val{ font-family:'JetBrains Mono'; font-weight:700; font-size:13px; white-space:nowrap; }
+  .pr-compact-date{ font-size:11px; color:var(--ink-soft); white-space:nowrap; flex:none; }
 </style>
 </head>
 <body>
@@ -1060,22 +1071,19 @@
     if(ex.type==="strength"){
       var pr = strengthPR(ex.id);
       if(!pr) return null;
-      return { value: pr.weight+" lb", sub: "\u00d7 "+pr.reps+" \u00b7 "+dateLabel(pr.date) };
+      return { value: pr.weight+" lb \u00d7 "+pr.reps, date: dateLabel(pr.date) };
     }
     if(ex.type==="bodyweight"){
       var bpr = bodyweightPR(ex.id);
       if(!bpr) return null;
-      return { value: bpr.reps+" reps", sub: dateLabel(bpr.date) };
+      return { value: bpr.reps+" reps", date: dateLabel(bpr.date) };
     }
     if(ex.type==="cardio"){
       var cpr = cardioPR(ex.id);
       if(!cpr || (!cpr.pace && !cpr.distance)) return null;
       var unit = ex.distanceUnit||"mi";
-      if(cpr.pace){
-        var sub = cpr.distance ? "Longest: "+cpr.distance.distance+" "+unit : dateLabel(cpr.pace.date);
-        return { value: formatPace(cpr.paceVal, unit)+" pace", sub: sub };
-      }
-      return { value: cpr.distance.distance+" "+unit, sub: "Longest \u00b7 "+dateLabel(cpr.distance.date) };
+      if(cpr.pace) return { value: formatPace(cpr.paceVal, unit), date: dateLabel(cpr.pace.date) };
+      return { value: cpr.distance.distance+" "+unit+" (longest)", date: dateLabel(cpr.distance.date) };
     }
     return null;
   }
@@ -1089,13 +1097,12 @@
     }).filter(Boolean);
     if(prRows.length){
       html += '<div class="section-title" style="margin-top:4px;">Current PRs</div>';
-      html += '<div class="card" style="padding:4px 16px;">';
+      html += '<div class="card" style="padding:2px 16px;">';
       prRows.forEach(function(row){
-        html += '<div class="session-row" data-ex="'+row.ex.id+'" style="cursor:pointer;">' +
-          '<div class="session-left"><span class="typetag '+row.ex.type+'">'+typeLabel(row.ex.type)+'</span>' +
-          '<div><div class="session-name">'+escapeHtml(row.ex.name)+'</div>' +
-          '<div class="session-meta">'+row.pr.sub+'</div></div></div>' +
-          '<div style="font-family:\'JetBrains Mono\';font-weight:700;font-size:15px;">'+row.pr.value+'</div></div>';
+        html += '<div class="pr-compact-row">' +
+          '<span class="pr-compact-name">'+escapeHtml(row.ex.name)+'</span>' +
+          '<span class="pr-compact-val">'+row.pr.value+'</span>' +
+          '<span class="pr-compact-date">'+row.pr.date+'</span></div>';
       });
       html += '</div>';
     }
